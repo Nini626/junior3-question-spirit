@@ -1,3 +1,4 @@
-streamlit==1.37.0
-zhipuai==2.0.1
-pillow==10.4.0
+streamlit
+zhipuai
+pillow>=9.0.0
+python-dotenv
