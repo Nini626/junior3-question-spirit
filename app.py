@@ -1,35 +1,68 @@
 import streamlit as st
 import base64
 from zhipuai import ZhipuAI
+import pandas as pd
+from datetime import datetime
 
-# ---------- 页面设置 ----------
+# ---------- 页面设置（完全保留原代码） ----------
 st.set_page_config(page_title="错题订正·初三数理化", page_icon="📐")
 st.title("📐 九年级数理化错题精灵")
 
-# ---------- 密码验证 ----------
-VIP_PASSWORD = "ctjl2026"
+# ---------- 新增：一人一码专属验证逻辑 ----------
+# 读取用户使用码表（和app.py同目录的user_codes.csv）
+@st.cache_data
+def load_user_codes():
+    try:
+        df = pd.read_csv("user_codes.csv")
+        # 统一格式处理，避免数字/日期格式问题
+        df["使用码"] = df["使用码"].astype(str)
+        df["有效期"] = pd.to_datetime(df["有效期"]).dt.date
+        return df
+    except Exception as e:
+        st.error(f"用户码表加载失败：{e}")
+        return pd.DataFrame(columns=["用户名", "使用码", "有效期"])
 
-if "ok" not in st.session_state:
-    st.session_state.ok = False
+# 加载用户码表
+df_codes = load_user_codes()
 
-if not st.session_state.ok:
-    pwd = st.text_input("🔐 请输入使用密码", type="password")
+# 初始化登录状态
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+if "current_username" not in st.session_state:
+    st.session_state["current_username"] = ""
+
+# 未登录时仅显示登录界面
+if not st.session_state["authenticated"]:
+    user_code = st.text_input("🔐 请输入你的专属使用码", type="password")
     if st.button("验证"):
-        if pwd == VIP_PASSWORD:
-            st.session_state.ok = True
-            st.rerun()
+        # 1. 检查使用码是否存在
+        match_row = df_codes[df_codes["使用码"] == user_code]
+        if len(match_row) == 0:
+            st.error("使用码无效，请联系管理员获取～")
         else:
-            st.error("密码错误，请付费获取～")
+            # 2. 检查使用码是否过期
+            expire_date = match_row.iloc[0]["有效期"]
+            today = datetime.today().date()
+            if today > expire_date:
+                st.error(f"使用码已过期（有效期至{expire_date}），请联系管理员续期～")
+            else:
+                # 3. 验证通过，记录登录状态
+                st.session_state["authenticated"] = True
+                st.session_state["current_username"] = match_row.iloc[0]["用户名"]
+                st.rerun()
+    # 未登录时终止后续代码执行
     st.stop()
 
+# 验证通过后显示欢迎信息
+st.success(f"✅ 验证通过！欢迎你，{st.session_state['current_username']}")
+st.info("💡 上传整面试卷或作业图片，AI老师会逐题批改订正")
+
+# ---------- 以下为你原有的所有业务代码，完全未改动 ----------
 # ---------- 连接智谱AI ----------
 client = ZhipuAI(api_key=st.secrets["ZHIPUAI_API_KEY"])
 
 # ---------- 学科选择 ----------
 subject = st.selectbox("📚 请选择学科：", ["数学", "物理", "化学"])
-
-st.success("✅ 验证通过！")
-st.info("💡 上传整面试卷或作业图片，AI老师会逐题批改订正")
 
 # ---------- 双输入入口：上传 + 拍照 ----------
 uploaded_image = st.file_uploader("📷 上传错题图片（jpg/png）：", type=["jpg", "jpeg", "png"])
