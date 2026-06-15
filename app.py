@@ -4,60 +4,83 @@ from zhipuai import ZhipuAI
 import pandas as pd
 from datetime import datetime
 
-# ---------- 页面设置（完全保留原代码） ----------
+# ---------- 页面设置 ----------
 st.set_page_config(page_title="错题订正·初三数理化", page_icon="📐")
 st.title("📐 九年级数理化错题精灵")
 
-# ---------- 新增：一人一码专属验证逻辑 ----------
-# 读取用户使用码表（和app.py同目录的user_codes.csv）
-@st.cache_data
+# ---------- 读取用户码表（新增：绑定手机号列） ----------
+@st.cache_data(show_spinner=False)
 def load_user_codes():
     try:
-        df = pd.read_csv("user_codes.csv")
-        # 统一格式处理，避免数字/日期格式问题
-        df["使用码"] = df["使用码"].astype(str)
-        df["有效期"] = pd.to_datetime(df["有效期"]).dt.date
+        df = pd.read_csv("user_codes.csv", dtype=str)
+        # 补全空值为空字符串，避免NaN报错
+        df["绑定手机号"] = df["绑定手机号"].fillna("")
+        # 转换日期用于判断过期
+        df["有效期_dt"] = pd.to_datetime(df["有效期"]).dt.date
         return df
     except Exception as e:
         st.error(f"用户码表加载失败：{e}")
-        return pd.DataFrame(columns=["用户名", "使用码", "有效期"])
+        return pd.DataFrame(columns=["用户名", "使用码", "有效期", "绑定手机号", "有效期_dt"])
 
-# 加载用户码表
+# 加载数据
 df_codes = load_user_codes()
 
-# 初始化登录状态
+# 初始化会话状态
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
 if "current_username" not in st.session_state:
     st.session_state["current_username"] = ""
 
-# 未登录时仅显示登录界面
+# ---------- 登录验证界面（新增手机号输入 + 绑定逻辑） ----------
 if not st.session_state["authenticated"]:
-    user_code = st.text_input("🔐 请输入你的专属使用码", type="password")
-    if st.button("验证"):
-        # 1. 检查使用码是否存在
-        match_row = df_codes[df_codes["使用码"] == user_code]
+    st.subheader("🔐 身份验证（一码一机，禁止共享）")
+    user_code = st.text_input("请输入你的专属使用码", type="password")
+    user_phone = st.text_input("请输入本人手机号（用于绑定激活）")
+    btn_verify = st.button("提交验证并激活")
+
+    if btn_verify:
+        # 简单手机号格式校验（仅判断位数，基础防误填）
+        if len(user_phone.strip()) != 11 or not user_phone.isdigit():
+            st.error("请输入正确的11位手机号！")
+            st.stop()
+
+        # 查找对应使用码
+        match_row = df_codes[df_codes["使用码"] == user_code.strip()]
         if len(match_row) == 0:
             st.error("使用码无效，请联系管理员获取～")
-        else:
-            # 2. 检查使用码是否过期
-            expire_date = match_row.iloc[0]["有效期"]
-            today = datetime.today().date()
-            if today > expire_date:
-                st.error(f"使用码已过期（有效期至{expire_date}），请联系管理员续期～")
-            else:
-                # 3. 验证通过，记录登录状态
-                st.session_state["authenticated"] = True
-                st.session_state["current_username"] = match_row.iloc[0]["用户名"]
-                st.rerun()
-    # 未登录时终止后续代码执行
+            st.stop()
+
+        idx = match_row.index[0]
+        bind_phone = df_codes.loc[idx, "绑定手机号"]
+        expire_date = match_row.iloc[0]["有效期_dt"]
+        today = datetime.today().date()
+
+        # 1. 判断是否已被绑定（核心防共享）
+        if bind_phone != "":
+            st.error("❌ 该使用码已被他人激活绑定，无法重复使用！")
+            st.stop()
+
+        # 2. 判断是否过期
+        if today > expire_date:
+            st.error(f"使用码已过期（有效期至{expire_date}），请联系管理员续期～")
+            st.stop()
+
+        # 3. 未绑定 + 未过期 → 执行绑定，写入CSV
+        df_codes.loc[idx, "绑定手机号"] = user_phone.strip()
+        # 回写到本地CSV（覆盖原文件，同步到GitHub后永久生效）
+        df_codes[["用户名", "使用码", "有效期", "绑定手机号"]].to_csv("user_codes.csv", index=False, encoding="utf-8")
+
+        # 4. 登录成功
+        st.session_state["authenticated"] = True
+        st.session_state["current_username"] = match_row.iloc[0]["用户名"]
+        st.rerun()
+
     st.stop()
 
-# 验证通过后显示欢迎信息
+# ---------- 验证通过后主页 ----------
 st.success(f"✅ 验证通过！欢迎你，{st.session_state['current_username']}")
 st.info("💡 上传整面试卷或作业图片，AI老师会逐题批改订正")
 
-# ---------- 以下为你原有的所有业务代码，完全未改动 ----------
 # ---------- 连接智谱AI ----------
 client = ZhipuAI(api_key=st.secrets["ZHIPUAI_API_KEY"])
 
@@ -76,7 +99,7 @@ elif uploaded_image is not None:
 else:
     image_to_process = None
 
-# ---------- 新提示词 ----------
+# ---------- 提示词 ----------
 prompt_dict = {
     "数学": (
         "你是一位采用苏格拉底式教学法的九年级数学老师。用户会上传一整面作业或试卷的图片，里面可能包含多道题目。"
